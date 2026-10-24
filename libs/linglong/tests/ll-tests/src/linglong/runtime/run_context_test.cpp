@@ -943,6 +943,127 @@ TEST_F(RunContextTest, resolveFromConfigBaseOnly)
     EXPECT_FALSE(context.getAppLayer().has_value());
 }
 
+TEST_F(RunContextTest, resolveFromConfigSkipsUnavailableExtension)
+{
+    LINGLONG_TRACE("resolveFromConfigSkipsUnavailableExtension");
+
+    auto baseRef = package::Reference::parse("stable:org.deepin.base/23.0.0/x86_64");
+    ASSERT_TRUE(baseRef.has_value())
+      << "Failed to create base reference: " << baseRef.error().message();
+
+    auto runtimeRef = package::Reference::parse("stable:org.deepin.runtime/23.0.0/x86_64");
+    ASSERT_TRUE(runtimeRef.has_value())
+      << "Failed to create runtime reference: " << runtimeRef.error().message();
+
+    auto appRef = package::Reference::parse("stable:org.example.app/1.0.0/x86_64");
+    ASSERT_TRUE(appRef.has_value())
+      << "Failed to create app reference: " << appRef.error().message();
+
+    auto unavailableExtensionRef =
+      package::Reference::parse("stable:org.example.unavailable-extension/1.0.0/x86_64");
+    ASSERT_TRUE(unavailableExtensionRef.has_value())
+      << "Failed to create unavailable extension reference: "
+      << unavailableExtensionRef.error().message();
+
+    auto availableExtensionRef =
+      package::Reference::parse("stable:org.example.available-extension/1.0.0/x86_64");
+    ASSERT_TRUE(availableExtensionRef.has_value())
+      << "Failed to create available extension reference: "
+      << availableExtensionRef.error().message();
+
+    api::types::v1::RunContextConfig config;
+    config.version = "1";
+    config.base = baseRef->toString();
+    config.runtime = runtimeRef->toString();
+    config.app = appRef->toString();
+    config.extensions = std::map<std::string, std::vector<std::string>>{
+        { appRef->toString(),
+          std::vector<std::string>{ unavailableExtensionRef->toString(),
+                                    availableExtensionRef->toString() } }
+    };
+
+    api::types::v1::RepositoryCacheLayersItem baseItem;
+    baseItem.info.id = "org.deepin.base";
+    baseItem.info.version = "23.0.0";
+    baseItem.info.kind = "base";
+    baseItem.info.channel = "stable";
+    baseItem.info.arch = { std::string{ "x86_64" } };
+
+    api::types::v1::RepositoryCacheLayersItem runtimeItem;
+    runtimeItem.info.id = "org.deepin.runtime";
+    runtimeItem.info.version = "23.0.0";
+    runtimeItem.info.kind = "runtime";
+    runtimeItem.info.channel = "stable";
+    runtimeItem.info.arch = { std::string{ "x86_64" } };
+
+    api::types::v1::RepositoryCacheLayersItem appItem;
+    appItem.info.id = "org.example.app";
+    appItem.info.version = "1.0.0";
+    appItem.info.kind = "app";
+    appItem.info.channel = "stable";
+    appItem.info.arch = { std::string{ "x86_64" } };
+
+    api::types::v1::RepositoryCacheLayersItem unavailableExtensionItem;
+    unavailableExtensionItem.info.id = "org.example.unavailable-extension";
+    unavailableExtensionItem.info.version = "1.0.0";
+    unavailableExtensionItem.info.kind = "extension";
+    unavailableExtensionItem.info.channel = "stable";
+    unavailableExtensionItem.info.arch = { std::string{ "x86_64" } };
+
+    api::types::v1::RepositoryCacheLayersItem availableExtensionItem;
+    availableExtensionItem.info.id = "org.example.available-extension";
+    availableExtensionItem.info.version = "1.0.0";
+    availableExtensionItem.info.kind = "extension";
+    availableExtensionItem.info.channel = "stable";
+    availableExtensionItem.info.arch = { std::string{ "x86_64" } };
+
+    EXPECT_CALL(*repo, getLayerItem(*baseRef, testing::_)).WillOnce(Return(baseItem));
+    EXPECT_CALL(*repo, getLayerItem(*runtimeRef, testing::_)).WillOnce(Return(runtimeItem));
+    EXPECT_CALL(*repo, getLayerItem(*appRef, testing::_)).WillOnce(Return(appItem));
+    EXPECT_CALL(*repo, getLayerItem(*unavailableExtensionRef, testing::_))
+      .WillOnce(Return(unavailableExtensionItem));
+    EXPECT_CALL(*repo, getLayerItem(*availableExtensionRef, testing::_))
+      .WillOnce(Return(availableExtensionItem));
+
+    package::LayerDir mockLayerDir(tempDir->path() / "merged");
+    EXPECT_CALL(*repo, getMergedModuleDir(*baseRef, testing::_))
+      .WillOnce(Return(utils::error::Result<package::LayerDir>(mockLayerDir)));
+    EXPECT_CALL(*repo, getMergedModuleDir(*runtimeRef, testing::_))
+      .WillOnce(Return(utils::error::Result<package::LayerDir>(mockLayerDir)));
+    EXPECT_CALL(*repo, getMergedModuleDir(*appRef, testing::_))
+      .WillOnce(Return(utils::error::Result<package::LayerDir>(mockLayerDir)));
+    EXPECT_CALL(*repo, getMergedModuleDir(*unavailableExtensionRef, testing::_))
+      .WillOnce(Return(LINGLONG_ERR("extension layer is unavailable")));
+    EXPECT_CALL(*repo, getMergedModuleDir(*availableExtensionRef, testing::_))
+      .WillOnce(Return(utils::error::Result<package::LayerDir>(mockLayerDir)));
+
+    RunContext context(*this->repo);
+    auto result = context.resolve(config);
+    ASSERT_TRUE(result.has_value()) << "Failed to resolve config: " << result.error().message();
+
+    ASSERT_EQ(context.getExtensionLayers().size(), 1);
+    EXPECT_EQ(context.getExtensionLayers().front().getReference().toString(),
+              availableExtensionRef->toString());
+    ASSERT_TRUE(context.getConfig().extensions.has_value());
+    ASSERT_EQ(context.getConfig().extensions->size(), 1);
+    ASSERT_EQ(context.getConfig().extensions->at(appRef->toString()).size(), 1);
+    EXPECT_EQ(context.getConfig().extensions->at(appRef->toString()).front(),
+              availableExtensionRef->toString());
+    EXPECT_TRUE(context.stateInfo().extensions.has_value());
+    ASSERT_EQ(context.stateInfo().extensions->size(), 1);
+    EXPECT_EQ(context.stateInfo().extensions->front(), availableExtensionRef->toString());
+
+    const auto bundlePath = tempDir->path() / "bundle";
+    std::filesystem::create_directories(bundlePath);
+
+    generator::ContainerCfgBuilder builder;
+    builder.setAppId(appRef->id).setBundlePath(bundlePath).disablePatch();
+
+    result = context.fillContextCfg(builder, bundlePath);
+    EXPECT_TRUE(result.has_value())
+      << "Failed to fill container config: " << result.error().message();
+}
+
 TEST_F(RunContextTest, resolveWithCDIDevicesInOptions)
 {
     LINGLONG_TRACE("resolveWithCDIDevicesInOptions");

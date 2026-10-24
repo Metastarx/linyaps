@@ -645,11 +645,19 @@ RunContext::resolveLayer(bool depsExcludeDev,
         }
     }
 
-    for (auto &ext : extensionLayers) {
-        if (!ext.resolveLayer()) {
-            LogW("ignore failed extension layer");
+    for (auto it = extensionLayers.begin(); it != extensionLayers.end();) {
+        auto &ext = *it;
+        auto resolved = ext.resolveLayer();
+        if (!resolved) {
+            // Keep extensionLayers limited to usable layers. Configuration, state, and OCI
+            // generation all consume this list and assume getLayerDir() has a value.
+            LogW("ignore failed extension layer {}: {}",
+                 ext.getReference().toString(),
+                 resolved.error());
+            it = extensionLayers.erase(it);
             continue;
         }
+        ++it;
 
         const auto &extensionOf = ext.getExtensionInfo();
         if (!extensionOf) {
