@@ -23,8 +23,10 @@ utils::error::Result<Reference> Reference::parse(const std::string &raw) noexcep
     LINGLONG_TRACE("parse reference string");
 
     static auto referenceRegExp = []() noexcept {
+        // match() searches for a substring, so anchor the grammar to the whole input. Otherwise a
+        // valid prefix would be accepted while leading text or extra components are ignored.
         QRegularExpression referenceRegExp(
-          R"((?<channel>[^:]+):(?<id>[^\/]+)\/(?<version>[^\/]+)\/(?<architecture>[^\/]+))");
+          R"(^(?<channel>[^:]+):(?<id>[^\/]+)\/(?<version>[^\/]+)\/(?<architecture>[^\/]+)$)");
         referenceRegExp.optimize();
         return referenceRegExp;
     }();

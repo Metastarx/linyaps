@@ -40,6 +40,8 @@ TEST(Package, Reference)
         "main:2222/1.0.0.0/unknown",
         ":1.0.0.1-beta/arm64",
         ":com.example.App/1.0.0.0/x86_64",
+        ":main:com.example.App/1.0.0.0/x86_64",
+        "main:com.example.App/1.0.0.0/x86_64/extra",
     };
 
     for (const auto &invalidCase : invalidReferences) {
