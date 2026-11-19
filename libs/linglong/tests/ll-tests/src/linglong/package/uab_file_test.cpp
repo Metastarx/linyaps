@@ -15,14 +15,19 @@
 #include <QCryptographicHash>
 #include <QFile>
 
+#include <gelf.h>
+#include <libelf.h>
+
 #include <algorithm>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <limits>
 #include <memory>
 #include <string>
 #include <string_view>
 
+#include <fcntl.h>
 #include <unistd.h>
 
 __attribute__((used, section(".note.uab.sig"), aligned(4))) const auto linglongUabSignature =
@@ -153,6 +158,41 @@ std::string readFile(const std::filesystem::path &path)
     return { std::istreambuf_iterator<char>{ stream }, std::istreambuf_iterator<char>{} };
 }
 
+bool corruptFirstSectionName(const std::filesystem::path &path)
+{
+    if (elf_version(EV_CURRENT) == EV_NONE) {
+        return false;
+    }
+
+    const auto fd = ::open(path.c_str(), O_RDWR | O_CLOEXEC);
+    if (fd == -1) {
+        return false;
+    }
+
+    Elf *elf = elf_begin(fd, ELF_C_RDWR, nullptr);
+    if (elf == nullptr) {
+        ::close(fd);
+        return false;
+    }
+
+    auto *scn = elf_nextscn(elf, nullptr);
+    GElf_Shdr shdr{};
+    if (scn == nullptr || gelf_getshdr(scn, &shdr) == nullptr) {
+        elf_end(elf);
+        ::close(fd);
+        return false;
+    }
+
+    // Keep the ELF structurally valid but point the first section name outside its string table.
+    shdr.sh_name = std::numeric_limits<decltype(shdr.sh_name)>::max();
+    const auto updated = gelf_update_shdr(scn, &shdr) != 0;
+    const auto written = updated && elf_update(elf, ELF_C_WRITE) != -1;
+
+    elf_end(elf);
+    ::close(fd);
+    return written;
+}
+
 TEST_F(UabFileTest, UnpackFuseOffset)
 {
     if (!std::filesystem::exists("/dev/fuse")) {
@@ -225,6 +265,23 @@ TEST_F(UabFileTest, Verify)
     auto verifyRet = uab.verify();
     ASSERT_TRUE(verifyRet.has_value()) << "Failed to verify uab file";
     ASSERT_TRUE(*verifyRet) << "Verify failed";
+}
+
+TEST_F(UabFileTest, VerifyRejectsInvalidSectionNameOffset)
+{
+    TempDir modifiedDir{ "linglong-uab-modified-" };
+    const auto modifiedUab = modifiedDir.path() / "invalid-section-name.uab";
+    std::filesystem::copy_file(uabFile,
+                               modifiedUab,
+                               std::filesystem::copy_options::overwrite_existing);
+    ASSERT_TRUE(corruptFirstSectionName(modifiedUab));
+
+    auto uab = UABFile::loadFromFile(modifiedUab);
+    ASSERT_TRUE(uab.has_value()) << uab.error().message();
+
+    auto verifyRet = (*uab)->verify();
+    ASSERT_FALSE(verifyRet.has_value());
+    EXPECT_NE(verifyRet.error().message().find("invalid section name offset"), std::string::npos);
 }
 
 TEST_F(UabFileTest, VerifyRejectsMismatchedMetaSignature)

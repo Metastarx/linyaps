@@ -94,6 +94,10 @@ utils::error::Result<GElf_Shdr> UABFile::getSectionHeader(const QString &section
         }
 
         auto *sname = elf_strptr(this->e, shdrstrndx, shdr.sh_name);
+        if (sname == nullptr) {
+            return LINGLONG_ERR(
+              fmt::format("invalid section name offset while looking for section {}", section));
+        }
         if (section.compare(sname) == 0) {
             return shdr;
         }

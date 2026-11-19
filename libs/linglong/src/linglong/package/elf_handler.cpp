@@ -340,7 +340,11 @@ utils::error::Result<void> ElfHandler::writeSectionData(const std::string &name,
         }
 
         const auto *sectionName = elf_strptr(e, shstrndx, sectionHeader.sh_name);
-        if (sectionName == nullptr || name != sectionName) {
+        if (sectionName == nullptr) {
+            return LINGLONG_ERR(
+              fmt::format("invalid section name offset while looking for section {}", name));
+        }
+        if (name != sectionName) {
             continue;
         }
         if (sectionHeader.sh_type == SHT_NOBITS || offset > sectionHeader.sh_size

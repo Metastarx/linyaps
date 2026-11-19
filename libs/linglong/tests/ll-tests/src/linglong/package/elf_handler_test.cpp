@@ -11,9 +11,16 @@
 
 #include <common/tempdir.h>
 
+#include <gelf.h>
+#include <libelf.h>
+
+#include <fcntl.h>
 #include <fstream>
+#include <limits>
 #include <string>
 #include <vector>
+
+#include <unistd.h>
 
 using namespace linglong::package;
 
@@ -125,6 +132,40 @@ void setElfIdent(const std::filesystem::path &path, std::size_t offset, unsigned
     ASSERT_TRUE(file.good());
 }
 
+bool corruptFirstSectionName(const std::filesystem::path &path)
+{
+    if (elf_version(EV_CURRENT) == EV_NONE) {
+        return false;
+    }
+
+    const auto fd = ::open(path.c_str(), O_RDWR | O_CLOEXEC);
+    if (fd == -1) {
+        return false;
+    }
+
+    Elf *elf = elf_begin(fd, ELF_C_RDWR, nullptr);
+    if (elf == nullptr) {
+        ::close(fd);
+        return false;
+    }
+
+    auto *scn = elf_nextscn(elf, nullptr);
+    GElf_Shdr shdr{};
+    if (scn == nullptr || gelf_getshdr(scn, &shdr) == nullptr) {
+        elf_end(elf);
+        ::close(fd);
+        return false;
+    }
+
+    shdr.sh_name = std::numeric_limits<decltype(shdr.sh_name)>::max();
+    const auto updated = gelf_update_shdr(scn, &shdr) != 0;
+    const auto written = updated && elf_update(elf, ELF_C_WRITE) != -1;
+
+    elf_end(elf);
+    ::close(fd);
+    return written;
+}
+
 } // namespace
 
 TEST(ElfHandlerTest, WriteSectionDataRewritesExistingSection)
@@ -152,6 +193,22 @@ TEST(ElfHandlerTest, WriteSectionDataRejectsUnknownSection)
 
     EXPECT_FALSE(result.has_value());
     EXPECT_THAT(result.error().message(), ::testing::HasSubstr("couldn't find section"));
+}
+
+TEST(ElfHandlerTest, WriteSectionDataRejectsInvalidSectionNameOffset)
+{
+    TempDir dir;
+    auto elf = copySelfExecutable(dir, "invalid-section-name");
+    ASSERT_TRUE(corruptFirstSectionName(elf));
+
+    auto handler = ElfHandler::create(elf);
+    ASSERT_TRUE(handler.has_value());
+
+    const char payload[] = { 'A' };
+    auto result = (*handler)->writeSectionData(".text", 0, payload, sizeof(payload));
+
+    EXPECT_FALSE(result.has_value());
+    EXPECT_THAT(result.error().message(), ::testing::HasSubstr("invalid section name offset"));
 }
 
 TEST(ElfHandlerTest, WriteSectionDataRejectsOutOfRangeOffset)
