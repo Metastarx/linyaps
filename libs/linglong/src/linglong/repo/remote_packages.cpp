@@ -46,11 +46,18 @@ const utils::error::Result<PackageWithRepo> RemotePackages::getLatestPackage() c
     return *latest;
 }
 
-std::vector<std::string> RemotePackages::getReferenceModules(const package::Reference &ref) const
+std::vector<std::string>
+RemotePackages::getReferenceModules(const package::ReferenceWithRepo &refRepo) const
 {
+    const auto &ref = refRepo.reference;
+    // Match the remote name used by OSTree pulls so we don't request another repo's modules.
+    const auto remoteName = refRepo.repo.alias.value_or(refRepo.repo.name);
     std::vector<std::string> modules;
-    for (const auto &packages : repoPackages) {
-        for (const auto &package : packages.second) {
+    for (const auto &[repo, packages] : repoPackages) {
+        if (repo.alias.value_or(repo.name) != remoteName) {
+            continue;
+        }
+        for (const auto &package : packages) {
             if (package.id == ref.id && package.channel == ref.channel
                 && package.version == ref.version.toString()
                 && package.arch[0] == ref.arch.toString()) {

@@ -1589,10 +1589,13 @@ PackageManager::needToUpgrade(const package::FuzzyReference &fuzzyRef,
     }
 
     if (!local || remoteRef->version > local->version) {
-        auto remoteModules = candidates->getReferenceModules(*remoteRef);
+        package::ReferenceWithRepo targetRef{ .repo = target->first.get(),
+                                              .reference = std::move(remoteRef).value() };
+        auto remoteModules = candidates->getReferenceModules(targetRef);
         if (remoteModules.empty()) {
-            return LINGLONG_ERR(fmt::format("no modules found for {}", remoteRef->toString()),
-                                utils::error::ErrorCode::AppUpgradeFailed);
+            return LINGLONG_ERR(
+              fmt::format("no modules found for {}", targetRef.reference.toString()),
+              utils::error::ErrorCode::AppUpgradeFailed);
         }
 
         for (const auto &module : modules) {
@@ -1615,10 +1618,7 @@ PackageManager::needToUpgrade(const package::FuzzyReference &fuzzyRef,
                                 utils::error::ErrorCode::AppUpgradeFailed);
         }
 
-        return std::make_pair(
-          package::ReferenceWithRepo{ .repo = target->first,
-                                      .reference = std::move(remoteRef).value() },
-          installModules);
+        return std::make_pair(std::move(targetRef), std::move(installModules));
     }
 
     return std::nullopt;

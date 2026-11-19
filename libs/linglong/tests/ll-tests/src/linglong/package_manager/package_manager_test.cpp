@@ -640,6 +640,35 @@ TEST_F(PackageManagerTest, NeedToUpgrade_WhenLocalIsOutdated_ReturnsUpgradeModul
     EXPECT_THAT((**result).second, ElementsAre("binary"));
 }
 
+TEST_F(PackageManagerTest, NeedToUpgrade_OnlyRequestsModulesFromSelectedRepo)
+{
+    std::optional<package::Reference> local = makeRef("1.0.0");
+    auto fuzzy = package::FuzzyReference::parse("main:org.example").value();
+
+    auto binary = makeAppInfo("2.0.0");
+    auto develop = binary;
+    develop.packageInfoV2Module = "develop";
+
+    repo::RemotePackages remote;
+    remote.addPackages(v1::Repo{ .name = "primary" }, { binary });
+    remote.addPackages(v1::Repo{ .name = "secondary" }, { binary, develop });
+    repo->onGetModuleList = [](const auto &) {
+        return std::vector<std::string>{ "binary", "develop" };
+    };
+    repo->onMatchRemoteByPriority = [&remote](const auto &, const auto &) {
+        return utils::error::Result<repo::RemotePackages>{ std::move(remote) };
+    };
+
+    auto result = pm->needToUpgrade(fuzzy, local, false);
+
+    ASSERT_TRUE(result.has_value());
+    ASSERT_TRUE(*result);
+    const auto &[target, modules] = **result;
+    EXPECT_EQ(target.repo.name, "primary");
+    EXPECT_EQ(target.reference.version.toString(), "2.0.0");
+    EXPECT_THAT(modules, ElementsAre("binary"));
+}
+
 TEST_F(PackageManagerTest, InstallAppDepends_BaseOnly_InstallsBase)
 {
     service::Task taskPlaceholder;

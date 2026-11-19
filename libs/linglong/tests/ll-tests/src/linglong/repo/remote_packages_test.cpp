@@ -89,7 +89,8 @@ TEST(RemotePackagesTest, GetLatestPackageAcrossMultipleReposPicksGlobalMax)
 TEST(RemotePackagesTest, GetReferenceModulesReturnsMatchingModules)
 {
     repo::RemotePackages packages;
-    packages.addPackages(v1::Repo{ .name = "stable" },
+    const v1::Repo stable{ .name = "stable" };
+    packages.addPackages(stable,
                          { makePkgInfo("org.example", "1.0.0", "binary"),
                            makePkgInfo("org.example", "1.0.0", "develop"),
                            makePkgInfo("org.example", "2.0.0", "binary"),
@@ -98,7 +99,7 @@ TEST(RemotePackagesTest, GetReferenceModulesReturnsMatchingModules)
     auto ref = package::Reference::parse("main:org.example/1.0.0/x86_64");
     ASSERT_TRUE(ref.has_value()) << ref.error().message();
 
-    auto modules = packages.getReferenceModules(*ref);
+    auto modules = packages.getReferenceModules({ .repo = stable, .reference = *ref });
     ASSERT_EQ(modules.size(), 2u);
     EXPECT_THAT(modules, ElementsAre("binary", "develop"));
 }
@@ -106,12 +107,34 @@ TEST(RemotePackagesTest, GetReferenceModulesReturnsMatchingModules)
 TEST(RemotePackagesTest, GetReferenceModulesReturnsEmptyWhenNoMatch)
 {
     repo::RemotePackages packages;
-    packages.addPackages(v1::Repo{ .name = "stable" }, { makePkgInfo("org.example", "9.9.9") });
+    const v1::Repo stable{ .name = "stable" };
+    packages.addPackages(stable, { makePkgInfo("org.example", "9.9.9") });
 
     auto ref = package::Reference::parse("main:org.example/1.0.0/x86_64");
     ASSERT_TRUE(ref.has_value()) << ref.error().message();
 
-    EXPECT_TRUE(packages.getReferenceModules(*ref).empty());
+    EXPECT_TRUE(packages.getReferenceModules({ .repo = stable, .reference = *ref }).empty());
+}
+
+TEST(RemotePackagesTest, GetReferenceModulesUsesSelectedRepoAlias)
+{
+    const v1::Repo primary{ .alias = "primary", .name = "stable" };
+    const v1::Repo secondary{ .alias = "secondary", .name = "stable" };
+    const v1::Repo missing{ .name = "stable" };
+    auto binary = makePkgInfo("org.example", "2.0.0");
+
+    repo::RemotePackages packages;
+    packages.addPackages(primary, { binary });
+    packages.addPackages(secondary, { binary, makePkgInfo("org.example", "2.0.0", "develop") });
+
+    auto ref = package::Reference::parse("main:org.example/2.0.0/x86_64");
+    ASSERT_TRUE(ref.has_value()) << ref.error().message();
+
+    EXPECT_THAT(packages.getReferenceModules({ .repo = primary, .reference = *ref }),
+                ElementsAre("binary"));
+    EXPECT_THAT(packages.getReferenceModules({ .repo = secondary, .reference = *ref }),
+                ElementsAre("binary", "develop"));
+    EXPECT_TRUE(packages.getReferenceModules({ .repo = missing, .reference = *ref }).empty());
 }
 
 } // namespace

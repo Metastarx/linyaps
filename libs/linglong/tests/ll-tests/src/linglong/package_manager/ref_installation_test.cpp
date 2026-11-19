@@ -353,12 +353,12 @@ TEST_F(RefInstallationTest, InstallExtraOnly)
     ASSERT_TRUE(action->doAction(task));
 }
 
-TEST_F(RefInstallationTest, InstallMultipleModules)
+TEST_F(RefInstallationTest, InstallMultipleModulesFromSelectedRepo)
 {
-    LINGLONG_TRACE("InstallMultipleModules");
+    LINGLONG_TRACE("InstallMultipleModulesFromSelectedRepo");
 
     auto fuzzy = package::FuzzyReference::parse("main:id/1.0.0/x86_64").value();
-    std::vector<std::string> modules{ "binary", "develop" };
+    std::vector<std::string> modules{ "binary", "develop", "lang-zh_CN" };
     api::types::v1::CommonOptions opts{ .force = false, .skipInteraction = true };
     auto action =
       service::RefInstallationAction::create(fuzzy, modules, *pm, *repo, opts, std::nullopt);
@@ -390,6 +390,9 @@ TEST_F(RefInstallationTest, InstallMultipleModules)
     repo::RemotePackages remote;
     remote.addPackages(api::types::v1::Repo{ .name = "repo" },
                        std::vector<api::types::v1::PackageInfoV2>{ infoBinary, infoDevelop });
+    auto infoLanguage = infoBinary;
+    infoLanguage.packageInfoV2Module = "lang-zh_CN";
+    remote.addPackages(api::types::v1::Repo{ .name = "other" }, { infoBinary, infoLanguage });
 
     EXPECT_CALL(*repo, matchRemoteByPriority(_, _)).WillOnce(Return(std::move(remote)));
 
@@ -401,6 +404,7 @@ TEST_F(RefInstallationTest, InstallMultipleModules)
 
     EXPECT_CALL(*repo, fetchRefMetaData(_, "develop", false))
       .WillOnce(Return(repo::RefMetaData{ "rev124", nlohmann::json(infoDevelop).dump() }));
+    EXPECT_CALL(*repo, fetchRefMetaData(_, "lang-zh_CN", _)).Times(0);
 
     EXPECT_CALL(*repo, getRefStatistics(_)).WillRepeatedly([](const repo::RefMetaData &) {
         return utils::error::Result<repo::RefStatistics>{

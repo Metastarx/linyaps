@@ -12,6 +12,8 @@ ll\-cli\-upgrade - Upgrade applications or runtimes
 
 The `ll-cli upgrade` command can update Linyaps applications. This command is used to upgrade installed applications or runtimes to the latest version in the remote repository.
 
+For each package, the upgrade uses modules from the selected repository only. An installed module that is unavailable there is not carried forward, even if another repository offers it for the same version.
+
 ## OPTIONS
 
 **-h, --help**
