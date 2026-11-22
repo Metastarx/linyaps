@@ -18,10 +18,14 @@
 #include "ocppi/runtime/RunOption.hpp"
 #include "ocppi/runtime/config/types/Process.hpp"
 
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
 #include <string>
+
+#include <grp.h>
+#include <nlohmann/json.hpp>
 
 using namespace linglong;
 
@@ -746,6 +750,55 @@ TEST_F(ContainerBuilderCreateTest, CreateInitContainerBuildsBundle)
     EXPECT_TRUE(std::filesystem::is_directory((*container)->bundle()));
 }
 
+TEST_F(ContainerBuilderCreateTest, CreateInitContainerPreservesSupplementaryGroups)
+{
+    const auto baseRef = addBaseLayer("24.1.0");
+    runtime::RunContext context(*repo);
+    resolveBase(context, baseRef);
+
+    auto container = builder->createInitContainer(context);
+    ASSERT_TRUE(container) << container.error().message();
+
+    const auto groupCount = ::getgroups(0, nullptr);
+    ASSERT_GE(groupCount, 0);
+    if (groupCount == 0) {
+        GTEST_SKIP() << "the test process has no supplementary groups";
+    }
+
+    std::vector<gid_t> groups(static_cast<std::size_t>(groupCount));
+    ASSERT_EQ(::getgroups(groupCount, groups.data()), groupCount);
+    if (std::none_of(groups.begin(), groups.end(), [](const auto group) {
+            return group != ::getgid();
+        })) {
+        GTEST_SKIP() << "the test process has no non-primary supplementary groups";
+    }
+
+    ocppi::runtime::config::types::Process process;
+    process.args = std::vector<std::string>{ "echo", "hello" };
+    EXPECT_FALSE((*container)->run(process, {}));
+
+    std::ifstream configInput((*container)->bundle() / "config.json");
+    const auto config = nlohmann::json::parse(configInput);
+    ASSERT_TRUE(config["linux"].contains("gidMappings"));
+    ASSERT_TRUE(config["process"]["user"].contains("additionalGids"));
+
+    for (const auto group : groups) {
+        if (group == ::getgid()) {
+            continue;
+        }
+
+        const auto found = std::any_of(config["linux"]["gidMappings"].begin(),
+                                       config["linux"]["gidMappings"].end(),
+                                       [group](const auto &mapping) {
+                                           return mapping["containerID"] == group
+                                             && mapping["hostID"] == group;
+                                       });
+        EXPECT_TRUE(found) << "missing supplementary GID mapping for " << group;
+        EXPECT_THAT(config["process"]["user"]["additionalGids"],
+                    testing::Contains(static_cast<int64_t>(group)));
+    }
+}
+
 TEST_F(ContainerBuilderCreateTest, CreateBuildContainerUsesExplicitBasePath)
 {
     const auto baseRef = addBaseLayer("25.0.0");
@@ -787,6 +840,38 @@ TEST_F(ContainerBuilderCreateTest, CreateRunContainerAppliesEnvironmentCapabilit
     const std::string content{ std::istreambuf_iterator<char>(input),
                                std::istreambuf_iterator<char>() };
     EXPECT_THAT(content, testing::HasSubstr("LINGLONG_TEST_ENV='value'"));
+
+    const auto groupCount = ::getgroups(0, nullptr);
+    ASSERT_GE(groupCount, 0);
+    if (groupCount == 0) {
+        GTEST_SKIP() << "the test process has no supplementary groups";
+    }
+
+    std::vector<gid_t> groups(static_cast<std::size_t>(groupCount));
+    ASSERT_EQ(::getgroups(groupCount, groups.data()), groupCount);
+
+    ocppi::runtime::config::types::Process process;
+    process.args = std::vector<std::string>{ "echo", "hello" };
+    EXPECT_FALSE((*container)->run(process, {}));
+
+    std::ifstream configInput((*container)->bundle() / "config.json");
+    const auto config = nlohmann::json::parse(configInput);
+    ASSERT_TRUE(config["linux"].contains("gidMappings"));
+    for (const auto group : groups) {
+        if (group == ::getgid()) {
+            continue;
+        }
+
+        const auto found = std::any_of(config["linux"]["gidMappings"].begin(),
+                                       config["linux"]["gidMappings"].end(),
+                                       [group](const auto &mapping) {
+                                           return mapping["containerID"] == group
+                                             && mapping["hostID"] == group;
+                                       });
+        EXPECT_TRUE(found) << "missing supplementary GID mapping for " << group;
+        EXPECT_THAT(config["process"]["user"]["additionalGids"],
+                    testing::Contains(static_cast<int64_t>(group)));
+    }
 }
 
 TEST_F(ContainerBuilderCreateTest, CreateRunContainerWithoutHomeReportsError)

@@ -37,12 +37,40 @@
 #include <utility>
 #include <variant>
 
+#include <grp.h>
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
 namespace {
+auto getSupplementaryGroups() noexcept
+  -> linglong::utils::error::Result<std::vector<int64_t>>
+{
+    LINGLONG_TRACE("get supplementary groups");
+
+    const auto groupCount = ::getgroups(0, nullptr);
+    if (groupCount < 0) {
+        return LINGLONG_ERR("failed to get supplementary groups");
+    }
+
+    std::vector<gid_t> groups(static_cast<std::size_t>(groupCount));
+    if (groupCount > 0 && ::getgroups(groupCount, groups.data()) < 0) {
+        return LINGLONG_ERR("failed to get supplementary groups");
+    }
+
+    const auto primaryGroup = ::getgid();
+    std::vector<int64_t> result;
+    result.reserve(groups.size());
+    for (const auto group : groups) {
+        if (group != primaryGroup) {
+            result.emplace_back(static_cast<int64_t>(group));
+        }
+    }
+
+    return result;
+}
+
 void mergeProcessConfig(ocppi::runtime::config::types::Process &dst,
                         const ocppi::runtime::config::types::Process &src)
 {
@@ -308,8 +336,18 @@ utils::error::Result<void> Container::run(const ocppi::runtime::config::types::P
     }
 
     if (!this->cfg.process->user) {
-        this->cfg.process->user =
-          ocppi::runtime::config::types::User{ .gid = ::getgid(), .uid = ::getuid() };
+        // The OCI runtime does not inherit the caller's supplementary groups
+        // when a user object is supplied, so keep render/video access explicit.
+        auto supplementaryGroups = getSupplementaryGroups();
+        if (!supplementaryGroups) {
+            return LINGLONG_ERR(supplementaryGroups);
+        }
+
+        this->cfg.process->user = ocppi::runtime::config::types::User{ .gid = ::getgid(),
+                                                                        .uid = ::getuid() };
+        if (!supplementaryGroups->empty()) {
+            this->cfg.process->user->additionalGids = std::move(*supplementaryGroups);
+        }
     }
 
     if (isatty(STDOUT_FILENO) == 1 || isatty(STDERR_FILENO) == 1) {

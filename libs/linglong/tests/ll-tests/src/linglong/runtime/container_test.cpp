@@ -19,10 +19,14 @@
 #include "ocppi/runtime/config/types/Config.hpp"
 #include "ocppi/runtime/config/types/Process.hpp"
 
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
 #include <memory>
 #include <string>
+
+#include <grp.h>
+#include <nlohmann/json.hpp>
 
 namespace fs = std::filesystem;
 
@@ -257,5 +261,48 @@ TEST_F(ContainerTest, RunMergesProcessConfigOverridesIntoBundle)
     EXPECT_THAT(content, testing::HasSubstr("\"uid\":6"));
     EXPECT_THAT(content, testing::HasSubstr("\"gid\":5"));
     EXPECT_THAT(content, testing::HasSubstr("\"cwd\":\"/tmp\""));
+}
+
+TEST_F(ContainerTest, RunPreservesSupplementaryGroups)
+{
+    const auto groupCount = ::getgroups(0, nullptr);
+    ASSERT_GE(groupCount, 0);
+    if (groupCount == 0) {
+        GTEST_SKIP() << "the test process has no supplementary groups";
+    }
+
+    std::vector<gid_t> groups(static_cast<std::size_t>(groupCount));
+    ASSERT_EQ(::getgroups(groupCount, groups.data()), groupCount);
+    if (std::none_of(groups.begin(), groups.end(), [](const auto group) {
+            return group != ::getgid();
+        })) {
+        GTEST_SKIP() << "the test process has no non-primary supplementary groups";
+    }
+
+    auto runtimePath = temp_dir->path() / "runtime-groups";
+    {
+        std::ofstream runtime(runtimePath);
+        runtime << "#!/bin/sh\nexit 0\n";
+    }
+    fs::permissions(runtimePath, fs::perms::owner_all, fs::perm_options::replace);
+
+    auto cli = ocppi::cli::crun::Crun::New(runtimePath);
+    ASSERT_TRUE(cli.has_value());
+    auto createResult = ContainerContext::create(
+      *context, ContainerContext::CreateOptions{ .bundleSuffix = "-groups" });
+    ASSERT_TRUE(createResult.has_value());
+
+    Container container(makeConfig(), std::move(*createResult), **cli);
+    ASSERT_TRUE(container.run(makeProcess(), {}).has_value());
+
+    std::ifstream input(container.bundle() / "config.json");
+    const auto config = nlohmann::json::parse(input);
+    ASSERT_TRUE(config["process"]["user"].contains("additionalGids"));
+    const auto &additionalGids = config["process"]["user"]["additionalGids"];
+    for (const auto group : groups) {
+        if (group != ::getgid()) {
+            EXPECT_THAT(additionalGids, testing::Contains(static_cast<int64_t>(group)));
+        }
+    }
 }
 } // namespace

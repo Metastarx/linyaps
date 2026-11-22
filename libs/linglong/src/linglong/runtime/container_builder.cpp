@@ -25,6 +25,7 @@
 #include <algorithm>
 #include <fstream>
 
+#include <grp.h>
 #include <unistd.h>
 
 namespace linglong::runtime {
@@ -77,6 +78,32 @@ auto getXDPDocumentsMountPoint() noexcept -> utils::error::Result<std::filesyste
 
     // c_str is crucial here, without it the path may include trailing null bytes
     return std::filesystem::path{ mountPoint.c_str() };
+}
+
+auto getSupplementaryGroups() noexcept -> utils::error::Result<std::vector<int64_t>>
+{
+    LINGLONG_TRACE("get supplementary groups");
+
+    const auto groupCount = ::getgroups(0, nullptr);
+    if (groupCount < 0) {
+        return LINGLONG_ERR("failed to get supplementary groups");
+    }
+
+    std::vector<gid_t> groups(static_cast<std::size_t>(groupCount));
+    if (groupCount > 0 && ::getgroups(groupCount, groups.data()) < 0) {
+        return LINGLONG_ERR("failed to get supplementary groups");
+    }
+
+    const auto primaryGroup = ::getgid();
+    std::vector<int64_t> result;
+    result.reserve(groups.size());
+    for (const auto group : groups) {
+        if (group != primaryGroup) {
+            result.emplace_back(static_cast<int64_t>(group));
+        }
+    }
+
+    return result;
 }
 
 } // namespace
@@ -405,6 +432,19 @@ auto ContainerBuilder::prepareContainer(runtime::RunContext &context,
       .addGIdMapping(gid, gid, 1)
       .bindDefault()
       .bindCgroup();
+
+    if (prepared.mode != ContainerMode::Build) {
+        auto supplementaryGroups = getSupplementaryGroups();
+        if (!supplementaryGroups) {
+            return LINGLONG_ERR(supplementaryGroups);
+        }
+
+        // Init and run containers retain a user namespace, so map groups such
+        // as "render" before Container::run writes them into the OCI user.
+        for (const auto group : *supplementaryGroups) {
+            prepared.cfgBuilder.addGIdMapping(group, group, 1);
+        }
+    }
 
     if (const auto &appCache = prepared.context->getContainerCache(); appCache) {
         prepared.cfgBuilder.setAppCache(*appCache, appCacheReadOnlyFor(mode));
