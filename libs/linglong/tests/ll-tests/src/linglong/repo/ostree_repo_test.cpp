@@ -11,6 +11,7 @@
 #include "../../common/tempdir.h"
 #include "../mocks/ostree_repo_mock.h"
 #include "linglong/api/types/v1/Generators.hpp"
+#include "linglong/api/types/v1/RepositoryCache.hpp"
 #include "linglong/common/constants.h"
 #include "linglong/package/reference.h"
 #include "linglong/repo/client_factory.h"
@@ -140,6 +141,35 @@ TEST_F(RepoTest, createPersistsConfigAndBootstrapsRepoArtifacts)
 
     auto loaded = OSTreeRepo::loadFromPath(repoRoot);
     EXPECT_TRUE(loaded.has_value()) << loaded.error().message();
+}
+
+TEST_F(RepoTest, getLayerItemSkipsCacheLayerWithoutArchitecture)
+{
+    TempDir tempDir;
+    auto config = createRepoConfig();
+    auto ostreeRepo = std::make_unique<MockOstreeRepo>(tempDir.path(), config);
+
+    api::types::v1::RepositoryCacheLayersItem invalidItem{
+        .commit = "invalid-commit",
+        .info = api::types::v1::PackageInfoV2{ .arch = {},
+                                               .channel = "main",
+                                               .id = "com.example.invalid",
+                                               .kind = "app",
+                                               .packageInfoV2Module = "binary",
+                                               .version = "1.0.0" },
+        .repo = "stable",
+    };
+    api::types::v1::RepositoryCache cache{ .config = config,
+                                           .layers = { std::move(invalidItem) },
+                                           .llVersion = "test",
+                                           .merged = std::nullopt,
+                                           .version = "2" };
+    std::ofstream(tempDir.path() / "states.json") << nlohmann::json(cache).dump();
+    ASSERT_TRUE(ostreeRepo->initCache(false).has_value());
+
+    auto ref = package::Reference::parse("main:com.example.invalid/1.0.0/x86_64");
+    ASSERT_TRUE(ref.has_value()) << ref.error().message();
+    EXPECT_FALSE(ostreeRepo->getLayerItem(*ref).has_value());
 }
 
 TEST_F(RepoTest, exportLayerSignDataExportsWhitelistedPathForEveryLayerKindAndModule)

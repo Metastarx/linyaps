@@ -135,18 +135,16 @@ void progress_changed(OstreeAsyncProgress *progress, gpointer user_data)
     data->taskContext->reportDataHandled(fetched, requested);
 }
 
-std::string ostreeRefFromLayerItem(const api::types::v1::RepositoryCacheLayersItem &layer)
+utils::error::Result<std::string>
+ostreeRefFromLayerItem(const api::types::v1::RepositoryCacheLayersItem &layer)
 {
-    std::string refspec = layer.info.channel + "/" + layer.info.id + "/" + layer.info.version + "/"
+    LINGLONG_TRACE("build OSTree ref from layer metadata");
+    if (layer.info.arch.empty()) {
+        return LINGLONG_ERR("layer item has no architecture metadata");
+    }
+
+    return layer.info.channel + "/" + layer.info.id + "/" + layer.info.version + "/"
       + layer.info.arch.front() + "/" + layer.info.packageInfoV2Module;
-
-    return refspec;
-}
-
-std::string ostreeRefSpecFromLayerItem(const api::types::v1::RepositoryCacheLayersItem &layer)
-{
-    std::string refspec = layer.repo + ":" + ostreeRefFromLayerItem(layer);
-    return refspec;
 }
 
 std::string ostreeSpecFromReference(const package::Reference &ref,
@@ -509,14 +507,25 @@ utils::error::Result<void> OSTreeRepo::removeOstreeRef(const std::string &remote
 utils::error::Result<void>
 OSTreeRepo::removeOstreeRef(const api::types::v1::RepositoryCacheLayersItem &layer) noexcept
 {
-    return this->removeOstreeRef(layer.repo, ostreeRefFromLayerItem(layer), layer.commit);
+    LINGLONG_TRACE("remove OSTree ref for layer");
+    auto ref = ostreeRefFromLayerItem(layer);
+    if (!ref) {
+        return LINGLONG_ERR(ref);
+    }
+
+    return this->removeOstreeRef(layer.repo, *ref, layer.commit);
 }
 
 utils::error::Result<void> OSTreeRepo::handleRepositoryUpdate(
   QDir layerDir, const api::types::v1::RepositoryCacheLayersItem &layer) noexcept
 {
-    std::string refspec = ostreeRefSpecFromLayerItem(layer);
-    LINGLONG_TRACE(fmt::format("checkout {} from ostree repository to layers dir", refspec));
+    LINGLONG_TRACE(fmt::format("checkout layer {} from OSTree repository", layer.commit));
+
+    auto ref = ostreeRefFromLayerItem(layer);
+    if (!ref) {
+        return LINGLONG_ERR(ref);
+    }
+    auto refspec = layer.repo + ":" + *ref;
 
     int root = open("/", O_DIRECTORY);
     auto _ = utils::finally::finally([root]() {

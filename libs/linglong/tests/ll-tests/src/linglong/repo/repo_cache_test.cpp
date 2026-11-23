@@ -320,6 +320,39 @@ TEST_F(RepoCacheTest, LoadCorruptFileFails)
     EXPECT_FALSE(cache.load().has_value());
 }
 
+TEST_F(RepoCacheTest, LoadSkipsLayersWithoutArchitecture)
+{
+    auto cacheFile = tempDir.path() / "states.json";
+    auto invalid = createLayerItem("invalid", "app.invalid", "1.0.0");
+    invalid.info.arch.clear();
+    writeCacheFile(cacheFile,
+                   api::types::v1::RepositoryCache{
+                     .config = createRepoConfig(),
+                     .layers = { invalid, createLayerItem("valid", "app.valid", "1.0.0") },
+                     .llVersion = "test",
+                     .merged = std::nullopt,
+                     .version = "2",
+                   });
+
+    RepoCache cache(cacheFile);
+    ASSERT_TRUE(cache.load().has_value());
+
+    auto items = cache.queryLayerItem(repoCacheQuery{ .architecture = "x86_64" });
+    ASSERT_EQ(items.size(), 1);
+    EXPECT_EQ(items.front().commit, "valid");
+}
+
+TEST_F(RepoCacheTest, AddRejectsLayerWithoutArchitecture)
+{
+    RepoCache cache(tempDir.path() / "states.json");
+    auto invalid = createLayerItem("invalid", "app.invalid", "1.0.0");
+    invalid.info.arch.clear();
+
+    auto result = cache.addLayerItem(invalid);
+    ASSERT_FALSE(result.has_value());
+    EXPECT_NE(result.error().message().find("architecture"), std::string::npos);
+}
+
 TEST_F(RepoCacheTest, QueryUsesRemainingFilters)
 {
     auto cacheFile = tempDir.path() / "states.json";

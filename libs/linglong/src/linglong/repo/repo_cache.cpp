@@ -49,7 +49,22 @@ utils::error::Result<void> RepoCache::load()
                       result->version,
                       cacheFileVersion));
     }
-    this->cache = std::move(result).value();
+    auto loadedCache = std::move(result).value();
+    // A layer without an architecture cannot form a package reference. Keep the other layers
+    // usable when an older cache contains such an entry.
+    auto firstInvalid = std::remove_if(
+      loadedCache.layers.begin(),
+      loadedCache.layers.end(),
+      [](const auto &layer) {
+          if (!layer.info.arch.empty()) {
+              return false;
+          }
+
+          LogW("skip cache layer {} without architecture metadata", layer.commit);
+          return true;
+      });
+    loadedCache.layers.erase(firstInvalid, loadedCache.layers.end());
+    this->cache = std::move(loadedCache);
 
     return LINGLONG_OK;
 }
@@ -130,6 +145,10 @@ utils::error::Result<void> RepoCache::rebuild(const api::types::v1::RepoConfigV2
         }
 
         item.info = std::move(info).value();
+        if (item.info.arch.empty()) {
+            LogW("skip ref {} without architecture metadata", ref);
+            continue;
+        }
         this->cache.layers.emplace_back(std::move(item));
     }
 
@@ -145,6 +164,10 @@ utils::error::Result<void>
 RepoCache::addLayerItem(const api::types::v1::RepositoryCacheLayersItem &item)
 {
     LINGLONG_TRACE("add layer item");
+
+    if (item.info.arch.empty()) {
+        return LINGLONG_ERR("layer item has no architecture metadata");
+    }
 
     auto it = findMatchingItem(item);
     if (it) {
@@ -164,6 +187,10 @@ utils::error::Result<std::vector<api::types::v1::RepositoryCacheLayersItem>::ite
 RepoCache::findMatchingItem(const api::types::v1::RepositoryCacheLayersItem &item) noexcept
 {
     LINGLONG_TRACE("find matching item");
+    if (item.info.arch.empty()) {
+        return LINGLONG_ERR("layer item has no architecture metadata");
+    }
+
     auto it = std::find_if(
       cache.layers.begin(),
       cache.layers.end(),
@@ -171,7 +198,7 @@ RepoCache::findMatchingItem(const api::types::v1::RepositoryCacheLayersItem &ite
           return !(item.commit != val.commit || item.repo != val.repo
                    || item.info.channel != val.info.channel || item.info.id != val.info.id
                    || item.info.version != val.info.version
-                   || item.info.arch.front() != val.info.arch.front()
+                   || val.info.arch.empty() || item.info.arch.front() != val.info.arch.front()
                    || item.info.packageInfoV2Module != val.info.packageInfoV2Module);
       });
 
@@ -241,7 +268,8 @@ RepoCache::queryLayerItem(const repoCacheQuery &query) const noexcept
             continue;
         }
 
-        if (query.architecture && query.architecture.value() != layer.info.arch.front()) {
+        if (query.architecture
+            && (layer.info.arch.empty() || query.architecture.value() != layer.info.arch.front())) {
             continue;
         }
 
